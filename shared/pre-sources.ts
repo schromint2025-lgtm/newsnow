@@ -13,6 +13,14 @@ const Time = {
 }
 
 export const originSources = {
+  "ainews": {
+    name: "AI 新闻",
+    type: "realtime",
+    column: "tech",
+    color: "purple",
+    home: "https://github.com/schromint2025-lgtm/newsnow",
+    desc: "多渠道 AI 新闻聚合（RSS + Hacker News）",
+  },
   "v2ex": {
     name: "V2EX",
     color: "slate",
