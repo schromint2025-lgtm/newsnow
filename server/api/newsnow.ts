@@ -1,29 +1,19 @@
 /**
  * NewsNow 多渠道新闻采集 API
- * 
- * 使用方法:
  * GET /api/newsnow?limit=20&hours=24&category=AI
- * 
- * 返回格式:
- * {
- *   status: "success",
- *   data: [...],
- *   total: 20
- * }
  */
 
 import { Hono } from 'hono'
-import { parseStringPromise } from 'xml2js'
+import { XMLParser } from 'fast-xml-parser'
 
 const app = new Hono()
 
-// 新闻源配置
 const RSS_FEEDS = [
   { name: 'Ars Technica AI', url: 'https://arstechnica.com/ai/feed/', category: 'AI' },
   { name: 'TechCrunch AI', url: 'https://techcrunch.com/category/artificial-intelligence/feed/', category: 'AI' },
+  { name: 'Wired AI', url: 'https://www.wired.com/feed/tag/ai/latest/rss', category: 'AI' },
 ]
 
-// 生成唯一 ID
 function generateId(url: string): string {
   const encoder = new TextEncoder()
   const data = encoder.encode(url)
@@ -33,7 +23,6 @@ function generateId(url: string): string {
   return hash.toString()
 }
 
-// 解析 RSS
 async function parseRSS(url: string, sourceName: string): Promise<any[]> {
   try {
     const response = await fetch(url, {
@@ -43,26 +32,28 @@ async function parseRSS(url: string, sourceName: string): Promise<any[]> {
     if (!response.ok) return []
     
     const xml = await response.text()
-    const parsed = await parseStringPromise(xml)
+    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
+    const parsed = parser.parse(xml)
     const items: any[] = []
     
-    const channel = parsed.rss?.channel?.[0] || parsed.feed?.entry || []
-    const entries = channel?.item || channel || []
+    const channel = parsed.rss?.channel || parsed.feed
+    const entries = channel?.item || channel?.entry || []
+    const entryArray = Array.isArray(entries) ? entries : [entries]
     
-    for (const entry of entries.slice(0, 10)) {
-      const title = entry.title?.[0] || ''
-      const link = entry.link?.[0]?.$?.href || entry.link?.[0] || ''
-      const description = entry.description?.[0] || entry.summary?.[0] || ''
-      const pubDate = entry.pubDate?.[0] || entry.published?.[0] || ''
+    for (const entry of entryArray.slice(0, 10)) {
+      const title = entry.title || ''
+      const link = entry.link?.['@_href'] || entry.link || entry.id || ''
+      const description = entry.description || entry.summary || ''
+      const pubDate = entry.pubDate || entry.published || entry.updated || ''
       
       if (title && link) {
         items.push({
-          id: generateId(link),
-          title: title.trim(),
-          url: link.trim(),
+          id: generateId(link.toString()),
+          title: title.toString().trim(),
+          url: link.toString().trim(),
           source: sourceName,
-          published: pubDate,
-          summary: description.replace(/<[^>]*>/g, '').substring(0, 300),
+          published: pubDate?.toString() || '',
+          summary: description?.toString().replace(/<[^>]*>/g, '').substring(0, 300) || '',
           category: 'AI'
         })
       }
@@ -75,7 +66,6 @@ async function parseRSS(url: string, sourceName: string): Promise<any[]> {
   }
 }
 
-// 获取 Hacker News
 async function fetchHackerNews(): Promise<any[]> {
   try {
     const topStories = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json').then(res => res.json())
@@ -106,18 +96,15 @@ async function fetchHackerNews(): Promise<any[]> {
   }
 }
 
-// 主采集函数
 async function collectNews(limit = 20, hours = 24) {
   const allItems: any[] = []
   const seenUrls = new Set<string>()
   
-  // 并行采集
   const results = await Promise.all([
     ...RSS_FEEDS.map(source => parseRSS(source.url, source.name)),
     fetchHackerNews()
   ])
   
-  // 合并去重
   for (const items of results) {
     for (const item of items) {
       if (!seenUrls.has(item.url)) {
@@ -127,20 +114,16 @@ async function collectNews(limit = 20, hours = 24) {
     }
   }
   
-  // 过滤时间
   const cutoff = Date.now() - (hours * 60 * 60 * 1000)
   const filtered = allItems.filter(item => {
     if (!item.published) return true
     return new Date(item.published).getTime() > cutoff
   })
   
-  // 排序
   filtered.sort((a, b) => new Date(b.published || 0).getTime() - new Date(a.published || 0).getTime())
-  
   return filtered.slice(0, limit)
 }
 
-// API 端点
 app.get('/', async (c) => {
   const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
   const hours = parseInt(c.req.query('hours') || '24')
@@ -157,7 +140,6 @@ app.get('/', async (c) => {
   })
 })
 
-// 健康检查
 app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
