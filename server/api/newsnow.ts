@@ -1,12 +1,14 @@
-/**
- * NewsNow 多渠道新闻采集 API
- * GET /api/newsnow?limit=20&hours=24&category=AI
- */
-
-import { Hono } from 'hono'
 import { XMLParser } from 'fast-xml-parser'
 
-const app = new Hono()
+interface NewsItem {
+  id: string
+  title: string
+  url: string
+  source: string
+  published: string
+  summary: string
+  category: string
+}
 
 const RSS_FEEDS = [
   { name: 'Ars Technica AI', url: 'https://arstechnica.com/ai/feed/', category: 'AI' },
@@ -23,7 +25,7 @@ function generateId(url: string): string {
   return hash.toString()
 }
 
-async function parseRSS(url: string, sourceName: string): Promise<any[]> {
+async function parseRSS(url: string, sourceName: string): Promise<NewsItem[]> {
   try {
     const response = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (NewsNow/1.0)' }
@@ -34,7 +36,7 @@ async function parseRSS(url: string, sourceName: string): Promise<any[]> {
     const xml = await response.text()
     const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
     const parsed = parser.parse(xml)
-    const items: any[] = []
+    const items: NewsItem[] = []
     
     const channel = parsed.rss?.channel || parsed.feed
     const entries = channel?.item || channel?.entry || []
@@ -66,14 +68,14 @@ async function parseRSS(url: string, sourceName: string): Promise<any[]> {
   }
 }
 
-async function fetchHackerNews(): Promise<any[]> {
+async function fetchHackerNews(): Promise<NewsItem[]> {
   try {
-    const topStories = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json').then(res => res.json())
-    const items: any[] = []
+    const topStories = await $fetch('https://hacker-news.firebaseio.com/v0/topstories.json')
+    const items: NewsItem[] = []
     
     for (const id of topStories.slice(0, 20)) {
       try {
-        const story = await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`).then(res => res.json())
+        const story = await $fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`)
         if (story?.type === 'story' && story.url) {
           const title = story.title || ''
           if (title.toLowerCase().match(/ai|ml|openai|llm|model|neural/)) {
@@ -96,52 +98,52 @@ async function fetchHackerNews(): Promise<any[]> {
   }
 }
 
-async function collectNews(limit = 20, hours = 24) {
-  const allItems: any[] = []
+export default defineEventHandler(async (event) => {
+  const query = getQuery(event)
+  const limit = Math.min(parseInt(query.limit as string) || 20, 50)
+  const hours = parseInt(query.hours as string) || 24
+  const category = query.category as string
+  
+  const allItems: NewsItem[] = []
   const seenUrls = new Set<string>()
   
-  const results = await Promise.all([
-    ...RSS_FEEDS.map(source => parseRSS(source.url, source.name)),
-    fetchHackerNews()
-  ])
-  
-  for (const items of results) {
-    for (const item of items) {
-      if (!seenUrls.has(item.url)) {
-        seenUrls.add(item.url)
-        allItems.push(item)
+  try {
+    const results = await Promise.all([
+      ...RSS_FEEDS.map(source => parseRSS(source.url, source.name)),
+      fetchHackerNews()
+    ])
+    
+    for (const items of results) {
+      for (const item of items) {
+        if (!seenUrls.has(item.url)) {
+          seenUrls.add(item.url)
+          allItems.push(item)
+        }
       }
     }
+    
+    const cutoff = Date.now() - (hours * 60 * 60 * 1000)
+    const filtered = allItems.filter(item => {
+      if (!item.published) return true
+      return new Date(item.published).getTime() > cutoff
+    })
+    
+    filtered.sort((a, b) => new Date(b.published || 0).getTime() - new Date(a.published || 0).getTime())
+    const final = category ? filtered.filter(item => item.category === category) : filtered
+    
+    return {
+      status: 'success',
+      timestamp: new Date().toISOString(),
+      data: final.slice(0, limit),
+      total: final.length
+    }
+  } catch (error) {
+    console.error('NewsNow API 错误:', error)
+    return {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      data: [],
+      total: 0
+    }
   }
-  
-  const cutoff = Date.now() - (hours * 60 * 60 * 1000)
-  const filtered = allItems.filter(item => {
-    if (!item.published) return true
-    return new Date(item.published).getTime() > cutoff
-  })
-  
-  filtered.sort((a, b) => new Date(b.published || 0).getTime() - new Date(a.published || 0).getTime())
-  return filtered.slice(0, limit)
-}
-
-app.get('/', async (c) => {
-  const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50)
-  const hours = parseInt(c.req.query('hours') || '24')
-  const category = c.req.query('category')
-  
-  const news = await collectNews(limit, hours)
-  const filtered = category ? news.filter(item => item.category === category) : news
-  
-  return c.json({
-    status: 'success',
-    timestamp: new Date().toISOString(),
-    data: filtered,
-    total: filtered.length
-  })
 })
-
-app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() })
-})
-
-export default app
