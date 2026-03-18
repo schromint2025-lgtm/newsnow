@@ -1,4 +1,5 @@
-import { XMLParser } from 'fast-xml-parser'
+// NewsNow 多渠道新闻采集 API
+// GET /api/newsnow?limit=20&hours=24&category=AI
 
 interface NewsItem {
   id: string
@@ -16,15 +17,6 @@ const RSS_FEEDS = [
   { name: 'Wired AI', url: 'https://www.wired.com/feed/tag/ai/latest/rss', category: 'AI' },
 ]
 
-function generateId(url: string): string {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(url)
-  const hash = crypto.subtle.digest('MD5', data).then(buf => 
-    Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 16)
-  )
-  return hash.toString()
-}
-
 async function parseRSS(url: string, sourceName: string): Promise<NewsItem[]> {
   try {
     const response = await fetch(url, {
@@ -34,28 +26,26 @@ async function parseRSS(url: string, sourceName: string): Promise<NewsItem[]> {
     if (!response.ok) return []
     
     const xml = await response.text()
-    const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
-    const parsed = parser.parse(xml)
     const items: NewsItem[] = []
     
-    const channel = parsed.rss?.channel || parsed.feed
-    const entries = channel?.item || channel?.entry || []
-    const entryArray = Array.isArray(entries) ? entries : [entries]
-    
-    for (const entry of entryArray.slice(0, 10)) {
-      const title = entry.title || ''
-      const link = entry.link?.['@_href'] || entry.link || entry.id || ''
-      const description = entry.description || entry.summary || ''
-      const pubDate = entry.pubDate || entry.published || entry.updated || ''
+    // 简单 XML 解析
+    const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g)
+    for (const match of Array.from(itemMatches).slice(0, 10)) {
+      const itemXml = match[1]
+      const title = itemXml.match(/<title>([\s\S]*?)<\/title>/)?.[1] || ''
+      const link = itemXml.match(/<link>([\s\S]*?)<\/link>/)?.[1] || ''
+      const description = itemXml.match(/<description>([\s\S]*?)<\/description>/)?.[1] || ''
+      const pubDate = itemXml.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] || ''
       
       if (title && link) {
+        const cleanLink = link.replace(/&amp;/g, '&')
         items.push({
-          id: generateId(link.toString()),
-          title: title.toString().trim(),
-          url: link.toString().trim(),
+          id: cleanLink.substring(0, 16),
+          title: title.trim(),
+          url: cleanLink,
           source: sourceName,
-          published: pubDate?.toString() || '',
-          summary: description?.toString().replace(/<[^>]*>/g, '').substring(0, 300) || '',
+          published: pubDate,
+          summary: description.replace(/<[^>]*>/g, '').substring(0, 300),
           category: 'AI'
         })
       }
@@ -63,14 +53,14 @@ async function parseRSS(url: string, sourceName: string): Promise<NewsItem[]> {
     
     return items
   } catch (error) {
-    console.error(`RSS 解析失败 [${sourceName}]:`, error)
+    console.error(`RSS 失败 [${sourceName}]:`, error)
     return []
   }
 }
 
 async function fetchHackerNews(): Promise<NewsItem[]> {
   try {
-    const topStories = await $fetch('https://hacker-news.firebaseio.com/v0/topstories.json')
+    const topStories: number[] = await $fetch('https://hacker-news.firebaseio.com/v0/topstories.json')
     const items: NewsItem[] = []
     
     for (const id of topStories.slice(0, 20)) {
@@ -80,7 +70,7 @@ async function fetchHackerNews(): Promise<NewsItem[]> {
           const title = story.title || ''
           if (title.toLowerCase().match(/ai|ml|openai|llm|model|neural/)) {
             items.push({
-              id: generateId(story.url),
+              id: story.url.substring(0, 16),
               title,
               url: story.url,
               source: 'Hacker News',
@@ -99,15 +89,15 @@ async function fetchHackerNews(): Promise<NewsItem[]> {
 }
 
 export default defineEventHandler(async (event) => {
-  const query = getQuery(event)
-  const limit = Math.min(parseInt(query.limit as string) || 20, 50)
-  const hours = parseInt(query.hours as string) || 24
-  const category = query.category as string
-  
-  const allItems: NewsItem[] = []
-  const seenUrls = new Set<string>()
-  
   try {
+    const query = getQuery(event)
+    const limit = Math.min(parseInt(query.limit as string) || 20, 50)
+    const hours = parseInt(query.hours as string) || 24
+    const category = query.category as string
+    
+    const allItems: NewsItem[] = []
+    const seenUrls = new Set<string>()
+    
     const results = await Promise.all([
       ...RSS_FEEDS.map(source => parseRSS(source.url, source.name)),
       fetchHackerNews()
@@ -138,7 +128,7 @@ export default defineEventHandler(async (event) => {
       total: final.length
     }
   } catch (error) {
-    console.error('NewsNow API 错误:', error)
+    console.error('API 错误:', error)
     return {
       status: 'error',
       message: error instanceof Error ? error.message : 'Unknown error',
